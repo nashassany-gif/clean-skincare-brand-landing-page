@@ -1,0 +1,21 @@
+{
+  "name": "loam-shop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "loam skincare shop — transactional SQLite orders, admin backend, fail-closed WeChat Pay v3 reserve",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node server/test/run.js && node server/test/reliability.js",
+    "backup": "node server/backup.js",
+    "init-admin": "node server/init-admin.js",
+    "migrate:json": "node server/migrate-json.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "argon2": "0.44.0",
+    "qr": "0.7.2"
+  }
+}

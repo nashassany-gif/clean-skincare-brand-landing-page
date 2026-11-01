@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+
+# Local application data and secrets
+data/
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+.token-key
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Backups and generated artifacts
+backups/
+backup/
+dist/
+build/
+coverage/
+*.log
+
+# Raw or machine-specific assets
+assets/images/_raw/
+.qa-runtime/
+review/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
