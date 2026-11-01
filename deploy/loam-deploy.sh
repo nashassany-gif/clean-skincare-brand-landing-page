@@ -106,10 +106,14 @@ sudo mv -Tf "$CURRENT.next" "$CURRENT"
 sudo systemctl restart "$SERVICE"
 
 ok=0
+current_real="$(readlink -f "$CURRENT")"
 for _ in $(seq 1 30); do
   if curl -fsS --max-time 3 "$HEALTH_URL" -o "$tmp/health.json" 2>/dev/null; then
     health="$(tr -d '[:space:]' < "$tmp/health.json")"
-    if [[ "$health" == *'"ok":true'* && "$health" == *'"paymentEnabled":false'* ]]; then
+    pid="$(systemctl show -p MainPID --value "$SERVICE")"
+    cwd="$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)"
+    release_commit="$(cat "$CURRENT/RELEASE_COMMIT" 2>/dev/null || true)"
+    if [[ "$health" == *'"ok":true'* && "$health" == *'"paymentEnabled":false'* && "$cwd" == "$current_real" && "$release_commit" == "$sha" ]]; then
       ok=1
       break
     fi

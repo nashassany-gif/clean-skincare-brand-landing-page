@@ -20,6 +20,8 @@ umask 077
 SERVICE="loam-shop"
 DEPLOY_USER="ubuntu"
 UNIT="/etc/systemd/system/${SERVICE}.service"
+DROPIN_DIR="/etc/systemd/system/${SERVICE}.service.d"
+DROPIN="$DROPIN_DIR/90-loam-release.conf"
 CURRENT="/srv/loam-current"
 DEPLOY_SCRIPT="/usr/local/bin/loam-deploy"
 HEALTH_URL="http://127.0.0.1:8787/api/health"
@@ -45,6 +47,9 @@ node_bin="$(command -v node)"
 
 install -d -m 700 "$BACKUP_DIR"
 cp -a "$UNIT" "$BACKUP_DIR/${SERVICE}.service"
+if [[ -f "$DROPIN" ]]; then
+  cp -a "$DROPIN" "$BACKUP_DIR/90-loam-release.conf"
+fi
 log "unit backed up to $BACKUP_DIR"
 
 if [[ -e "$CURRENT" && ! -L "$CURRENT" ]]; then
@@ -63,6 +68,37 @@ if ! grep -qx "WorkingDirectory=$CURRENT" "$UNIT" || \
   systemctl daemon-reload
   log "systemd unit updated"
 fi
+
+# The old release workflow created a drop-in that overrides the unit. Rewrite
+# only its deployment-path lines and preserve Environment/hardening settings.
+if [[ -f "$DROPIN" ]]; then
+  section_count="$(grep -c '^\[' "$DROPIN" || true)"
+  [[ "$section_count" -eq 1 ]] || die "unexpected sections in $DROPIN"
+  dropin_tmp="$(mktemp)"
+  awk '
+    /^\[/ {print; next}
+    /^WorkingDirectory=/ {next}
+    /^ExecStart=/ {next}
+    {print}
+  ' "$DROPIN" > "$dropin_tmp"
+  printf '%s\n' \
+    'WorkingDirectory=/srv/loam-current' \
+    'ExecStart=' \
+    'ExecStart=/usr/bin/node /srv/loam-current/server/index.js' >> "$dropin_tmp"
+  install -m 644 -o root -g root "$dropin_tmp" "$DROPIN"
+  rm -f "$dropin_tmp"
+  systemctl daemon-reload
+  log "systemd drop-in updated"
+fi
+
+# Refuse to proceed if another drop-in still overrides the deployment paths.
+for f in "$DROPIN_DIR"/*.conf; do
+  [[ -e "$f" ]] || continue
+  [[ "$f" == "$DROPIN" ]] && continue
+  if grep -qE '^(WorkingDirectory|ExecStart)=' "$f"; then
+    die "unexpected deployment override in $f"
+  fi
+done
 
 install -o root -g root -m 755 "$SCRIPT_DIR/loam-deploy.sh" "$DEPLOY_SCRIPT"
 log "installed $DEPLOY_SCRIPT"
@@ -84,10 +120,13 @@ fi
 
 systemctl restart "$SERVICE"
 ok=0
+current_real="$(readlink -f "$CURRENT")"
 for _ in $(seq 1 30); do
   if curl -fsS --max-time 3 "$HEALTH_URL" -o /tmp/loam-setup-health.json 2>/dev/null; then
     health="$(tr -d '[:space:]' < /tmp/loam-setup-health.json)"
-    if [[ "$health" == *'"ok":true'* && "$health" == *'"paymentEnabled":false'* ]]; then
+    pid="$(systemctl show -p MainPID --value "$SERVICE")"
+    cwd="$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)"
+    if [[ "$health" == *'"ok":true'* && "$health" == *'"paymentEnabled":false'* && "$cwd" == "$current_real" ]]; then
       ok=1
       break
     fi
@@ -97,8 +136,11 @@ done
 rm -f /tmp/loam-setup-health.json
 
 if [[ "$ok" != 1 ]]; then
-  log "health check failed; restoring previous unit and symlink"
+  log "health or process-directory check failed; restoring previous unit, drop-in and symlink"
   cp -a "$BACKUP_DIR/${SERVICE}.service" "$UNIT"
+  if [[ -f "$BACKUP_DIR/90-loam-release.conf" ]]; then
+    cp -a "$BACKUP_DIR/90-loam-release.conf" "$DROPIN"
+  fi
   ln -sfn "$current_wd" "$CURRENT"
   systemctl daemon-reload
   systemctl restart "$SERVICE"

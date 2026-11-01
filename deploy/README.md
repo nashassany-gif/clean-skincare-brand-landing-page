@@ -14,7 +14,8 @@ The deploy script:
 5. blocks if `server/database.js` changed and no server-side approval marker exists;
 6. takes a fresh online SQLite backup before switching;
 7. atomically switches `/srv/loam-current` and restarts `loam-shop`;
-8. health-checks the local service and rolls back the symlink on failure.
+8. verifies the health endpoint, the running process's actual working directory and the release commit;
+9. rolls back the symlink and restarts the previous release on failure.
 
 It never reads application data, customer records, `.env` files or keys.
 
@@ -43,9 +44,12 @@ On the VPS, as root, from a directory containing `setup-vps.sh`,
 sudo bash setup-vps.sh /path/to/loam-deploy-key.pub
 ```
 
-The setup script backs up the systemd unit, points it at `/srv/loam-current`,
-installs the root-owned deploy script, adds the restricted key and verifies the
-service health. It rolls back the unit and symlink if the health check fails.
+The setup script backs up the systemd unit and any existing
+`90-loam-release.conf` drop-in, points both at `/srv/loam-current`, installs the
+root-owned deploy script, adds the restricted key and verifies the service
+health plus the process's actual working directory. It rolls back the unit,
+drop-in and symlink if the check fails. It refuses to proceed if another
+drop-in still overrides `WorkingDirectory` or `ExecStart`.
 
 ## Database migration gate
 
