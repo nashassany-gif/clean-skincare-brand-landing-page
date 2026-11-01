@@ -129,8 +129,14 @@ Restore into a **new** private directory with the service stopped, set `LOAM_DAT
 
 - Never commit `data/`, `*.sqlite*`, `.token-key`, `.env*`, backups, private keys or production credentials.
 - The public snapshot intentionally excludes review screenshots, QA logs, design source files and server-specific deployment records.
-- Deployment automation is maintained separately from this snapshot. This repository does not contain production secrets or customer data.
+- Deployment automation lives in `.github/workflows/deploy.yml` and [`deploy/`](deploy/README.md). It uses a restricted deployment key and never stores production data or secrets in this repository.
 - If you find a security issue, do not open a public issue containing secrets or customer data. Contact the repository owner privately.
+
+## Deployment
+
+The `main` branch is deployed to the existing VPS by GitHub Actions after the full test suite passes. A dedicated SSH key is restricted to a forced deployment command; production data, customer records and credentials are never placed in this repository.
+
+A change to `server/database.js` is treated as a possible database migration. It requires an explicit server-side approval marker and a manually triggered workflow. See [`deploy/README.md`](deploy/README.md) for the deployment contract, migration gate and rollback procedure.
 
 ## Licensing
 
