@@ -39,7 +39,7 @@ function normaliseItems(rawItems){
   for(const raw of rawItems){
     if(!raw||typeof raw!=='object'||Array.isArray(raw))return{ok:false,message:'Malformed bag item.'};
     const id=typeof raw.id==='string'?raw.id:'';const qty=raw.qty;
-    if(!catalog.getOrderable(id))return{ok:false,message:`This product is not available: ${id}`};
+    if(!catalog.getOrderable(id))return{ok:false,status:409,code:'catalog_changed',message:`This product is no longer available: ${id}. Review your bag.`};
     if(!Number.isSafeInteger(qty)||qty<1)return{ok:false,message:`Invalid quantity for ${id}.`};
     const next=(merged.get(id)||0)+qty;if(next>catalog.MAX_QTY_PER_LINE)return{ok:false,message:`You can order at most ${catalog.MAX_QTY_PER_LINE} of ${id}.`};merged.set(id,next);
   }
@@ -63,7 +63,7 @@ function sanitiseCustomer(customer){
 }
 function fingerprint(items,shipping,customer){return crypto.createHash('sha256').update(JSON.stringify({items:items.map(i=>[i.id,i.qty]),shipping,customer:{...customer,email:customer.email.toLowerCase()}})).digest('hex');}
 function number(){for(let i=0;i<20;i++){const n=`LOAM-${new Date().toISOString().slice(0,10).replace(/-/g,'')}-${crypto.randomInt(0,100000).toString().padStart(5,'0')}`;if(!store.getOrder(n,false))return n;}throw new Error('Could not allocate order number.');}
-function createOrder({items:rawItems,shipping,customer,idempotencyKey}){
+function createOrder({items:rawItems,shipping,customer,idempotencyKey,requirePriceConfirmation=false,expectedTotalCents}){
   const normal=normaliseItems(rawItems);if(!normal.ok)return normal;const totals=priceOrder(normal.items,shipping);if(!totals.ok)return totals;
   if(typeof idempotencyKey!=='string'||idempotencyKey.length<16||idempotencyKey.length>200)return{ok:false,status:400,message:'A valid Idempotency-Key is required.'};
   const safe=sanitiseCustomer(customer),fp=fingerprint(normal.items,totals.shippingMethod,safe);
@@ -71,7 +71,16 @@ function createOrder({items:rawItems,shipping,customer,idempotencyKey}){
     expireReservations();
     const old=db.prepare('SELECT * FROM idempotency WHERE key=?').get(idempotencyKey);
     if(old){if(old.fingerprint!==fp)return{ok:false,status:409,message:'This Idempotency-Key was already used for a different request.'};return{ok:true,replayed:true,order:store.getOrder(old.order_number),orderToken:(()=>{const row=db.prepare('SELECT token_ciphertext FROM orders WHERE number=?').get(old.order_number);return row&&row.token_ciphertext?tokens.open(row.token_ciphertext):null;})()};}
-    for(const item of normal.items)if(store.availableStock(item.id)<item.qty)return{ok:false,status:409,message:`Not enough ${item.name} in stock.`};
+    if(requirePriceConfirmation && (!Number.isSafeInteger(expectedTotalCents) || rawItems.some(raw=>!Number.isSafeInteger(raw.expectedUnitPriceCents)))) return{ok:false,status:409,code:'checkout_outdated',message:'This checkout is outdated. Reload the shop and review your order before submitting.'};
+    for(const raw of rawItems){
+      if(raw.expectedUnitPriceCents !== undefined){
+        if(!Number.isSafeInteger(raw.expectedUnitPriceCents)||raw.expectedUnitPriceCents<0)return{ok:false,status:400,message:'Invalid expected price.'};
+        const current=catalog.getOrderable(raw.id);
+        if(!current||current.priceCents!==raw.expectedUnitPriceCents)return{ok:false,status:409,code:'price_changed',message:`Price changed for ${current ? current.name : raw.id}: CNY ${(raw.expectedUnitPriceCents/100).toFixed(2)} → ${current ? 'CNY '+(current.priceCents/100).toFixed(2) : 'unavailable'}. Refresh the shop and review before ordering.`};
+      }
+    }
+    if(requirePriceConfirmation && expectedTotalCents!==totals.totalCents)return{ok:false,status:409,code:'price_changed',message:`Order total changed: CNY ${(expectedTotalCents/100).toFixed(2)} → CNY ${(totals.totalCents/100).toFixed(2)}. Review the updated order before submitting.`};
+    for(const item of normal.items)if(store.availableStock(item.id)<item.qty)return{ok:false,status:409,code:'catalog_changed',message:`Not enough ${item.name} in stock. Review your bag.`};
     const n=number(),at=new Date(),token=crypto.randomBytes(32).toString('base64url');
     db.prepare(`INSERT INTO orders(number,created_at,updated_at,expires_at,currency,subtotal_cents,shipping_cents,tax_cents,total_cents,shipping_method,tax_rate,customer_json,token_hash,token_ciphertext,payment_status,fulfillment_status,provider) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(n,at.toISOString(),at.toISOString(),new Date(at.getTime()+RESERVATION_TTL_MS).toISOString(),catalog.CURRENCY,totals.subtotalCents,totals.shippingCents,totals.taxCents,totals.totalCents,totals.shippingMethod,totals.taxRate,JSON.stringify(safe),store.hash(token),tokens.seal(token),'unpaid','pending','wechatpay');
     for(const i of normal.items){db.prepare('INSERT INTO order_items VALUES(?,?,?,?,?,?,?)').run(n,i.id,i.name,i.size,i.qty,i.unitPriceCents,i.lineTotalCents);db.prepare("INSERT INTO stock_ledger(order_number,product_id,qty,action,created_at) VALUES(?,?,?,'reserve',?)").run(n,i.id,i.qty,at.toISOString());}

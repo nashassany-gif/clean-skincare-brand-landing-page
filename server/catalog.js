@@ -139,23 +139,28 @@ function updateProduct(id, patch, actor) {
   if (!existing) return { ok: false, status: 404, message: 'Product not found.' };
   const v = validate(patch, { partial: true });
   if (!v.ok) return v;
+  if (patch.expectedUpdatedAt !== undefined && patch.expectedUpdatedAt !== existing.updatedAt) return { ok: false, status: 409, message: 'This product changed since you opened it. Refresh and try again.' };
   if (v.fields.id !== undefined && v.fields.id !== id) return { ok: false, status: 400, message: 'Product id cannot be changed.' };
   const f = v.fields;
   const cols = { name: 'name', size: 'size', description: 'description', image: 'image', priceCents: 'price_cents', stock: 'stock', sort: 'sort', status: 'status' };
   const sets = [], params = [];
   for (const [key, col] of Object.entries(cols)) if (f[key] !== undefined) { sets.push(col + '=?'); params.push(f[key]); }
   if (!sets.length) return { ok: true, product: existing };
-  sets.push('updated_at=?'); params.push(new Date().toISOString(), id);
-  db().prepare(`UPDATE products SET ${sets.join(',')} WHERE id=?`).run(...params);
-  require('./orders').audit(actor, 'product.update', null, { id, fields: Object.keys(f) });
-  return { ok: true, product: getProduct(id) };
+  const nextUpdated = new Date(Math.max(Date.now(), Date.parse(existing.updatedAt) + 1)).toISOString();
+  sets.push('updated_at=?'); params.push(nextUpdated, id, existing.updatedAt);
+  return require('./store').transaction(() => {
+    const changed = db().prepare(`UPDATE products SET ${sets.join(',')} WHERE id=? AND updated_at=?`).run(...params);
+    if (!changed.changes) return { ok: false, status: 409, message: 'This product changed. Refresh and try again.' };
+    require('./orders').audit(actor, 'product.update', null, { id, fields: Object.keys(f), ...(f.priceCents !== undefined && f.priceCents !== existing.priceCents ? { oldPriceCents: existing.priceCents, newPriceCents: f.priceCents } : {}) });
+    return { ok: true, product: getProduct(id) };
+  });
 }
 
 function setStatus(id, status, actor) {
   if (!STATUSES.includes(status)) return { ok: false, status: 400, message: 'Invalid status.' };
   const existing = getProduct(id);
   if (!existing) return { ok: false, status: 404, message: 'Product not found.' };
-  db().prepare('UPDATE products SET status=?,updated_at=? WHERE id=?').run(status, new Date().toISOString(), id);
+  db().prepare('UPDATE products SET status=?,updated_at=? WHERE id=?').run(status, new Date(Math.max(Date.now(), Date.parse(existing.updatedAt) + 1)).toISOString(), id);
   require('./orders').audit(actor, 'product.status', null, { id, status });
   return { ok: true, product: getProduct(id) };
 }

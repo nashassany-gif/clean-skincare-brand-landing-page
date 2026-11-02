@@ -1,7 +1,7 @@
 'use strict';
 /* Product administration. Session, CSRF and role checks are all enforced by the
    server; this file only renders and collects input. Every value is escaped. */
-let csrf=sessionStorage.getItem('loam_csrf')||'',role='viewer',editing=null,imagePath='';
+let csrf=sessionStorage.getItem('loam_csrf')||'',role='viewer',editing=null,imagePath='',priceEditing=null;
 const $=id=>document.getElementById(id);
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const yuan=cents=>'¥'+(cents/100).toFixed(2);
@@ -22,7 +22,7 @@ async function init(){
 }
 async function load(){
   const {products}=await api('/api/admin/products');
-  $('rows').innerHTML=products.length?products.map(p=>`<tr><td><strong>${esc(p.name)}</strong><br><span class="muted">${esc(p.id)}${p.size?' · '+esc(p.size):''}</span></td><td>${yuan(p.priceCents)}</td><td>${p.available}<br><span class="muted">of ${p.stock} on hand</span></td><td><span class="badge ${esc(p.status)}">${esc(p.status)}</span></td><td><span class="muted">${esc(p.updatedAt?new Date(p.updatedAt).toLocaleString():'—')}</span></td><td><div class="actions"><button class="btn secondary" data-edit="${esc(p.id)}" type="button">Edit</button><button class="btn secondary" data-toggle="${esc(p.id)}" data-status="${p.status==='active'?'archived':'active'}" type="button" ${readOnly()?'disabled':''}>${p.status==='active'?'Unpublish':'Publish'}</button><button class="btn secondary" data-delete="${esc(p.id)}" type="button" ${readOnly()||!p.deletable?'disabled':''} title="${p.deletable?'':'Referenced by orders; archive instead'}">Delete</button></div></td></tr>`).join(''):'<tr><td colspan="6">No products yet.</td></tr>';
+  $('rows').innerHTML=products.length?products.map(p=>`<tr><td><strong>${esc(p.name)}</strong><br><span class="muted">${esc(p.id)}${p.size?' · '+esc(p.size):''}</span></td><td>${yuan(p.priceCents)}</td><td>${p.available}<br><span class="muted">of ${p.stock} on hand</span></td><td><span class="badge ${esc(p.status)}">${esc(p.status)}</span></td><td><span class="muted">${esc(p.updatedAt?new Date(p.updatedAt).toLocaleString():'—')}</span></td><td><div class="actions"><button class="btn secondary" data-edit="${esc(p.id)}" type="button">Edit</button><button class="btn secondary" data-price="${esc(p.id)}" type="button" ${readOnly()?'disabled':''}>Change price</button><button class="btn secondary" data-toggle="${esc(p.id)}" data-status="${p.status==='active'?'archived':'active'}" type="button" ${readOnly()?'disabled':''}>${p.status==='active'?'Unpublish':'Publish'}</button><button class="btn secondary" data-delete="${esc(p.id)}" type="button" ${readOnly()||!p.deletable?'disabled':''} title="${p.deletable?'':'Referenced by orders; archive instead'}">Delete</button></div></td></tr>`).join(''):'<tr><td colspan="6">No products yet.</td></tr>';
   $('message').textContent='';
   return products;
 }
@@ -52,6 +52,7 @@ async function save(event){
     const price=Math.round(Number($('fPrice').value)*100);
     if(!Number.isSafeInteger(price)||price<0)throw new Error('Enter a price in yuan, e.g. 46.00.');
     const payload={name:$('fName').value.trim(),size:$('fSize').value.trim(),priceCents:price,stock:Number($('fStock').value),sort:Number($('fSort').value),status:$('fStatus').value,description:$('fDesc').value};
+    if(editing)payload.expectedUpdatedAt=editing.updatedAt;
     if(!editing&&$('fId').value.trim())payload.id=$('fId').value.trim();
     const saved=editing
       ?await api('/api/admin/products/'+encodeURIComponent(editing.id),{method:'PATCH',body:JSON.stringify(payload)})
@@ -69,6 +70,19 @@ async function uploadImage(id){
   const result=await api('/api/admin/products/'+encodeURIComponent(id)+'/image',{method:'POST',raw:true,headers:{'Content-Type':type},body:file});
   imagePath=result.product.image;
 }
+$('priceForm').addEventListener('submit',async event=>{
+  event.preventDefault();
+  if(!priceEditing)return;
+  const button=$('savePrice');button.disabled=true;$('priceError').textContent='';
+  try{
+    const value=$('priceValue').value.trim();
+    if(!/^\d+(\.\d{1,2})?$/.test(value))throw new Error('Enter a valid price with at most two decimal places.');
+    await api('/api/admin/products/'+encodeURIComponent(priceEditing.id),{method:'PATCH',body:JSON.stringify({priceCents:Math.round(Number(value)*100),expectedUpdatedAt:priceEditing.updatedAt})});
+    $('priceDialog').close();priceEditing=null;await load();
+  }catch(err){$('priceError').textContent=err.message;}
+  finally{button.disabled=false;}
+});
+$('cancelPrice').onclick=()=>$('priceDialog').close();
 $('productForm').addEventListener('submit',save);
 $('newProduct').onclick=()=>openEditor(null);
 $('cancelEdit').onclick=()=>$('editor').close();
@@ -79,10 +93,20 @@ $('clearImage').onclick=async()=>{
 };
 $('rows').onclick=async event=>{
   const editButton=event.target.closest('[data-edit]');
+  const priceButton=event.target.closest('[data-price]');
   const toggleButton=event.target.closest('[data-toggle]');
   const deleteButton=event.target.closest('[data-delete]');
   try{
     if(editButton){const products=await api('/api/admin/products');openEditor(products.products.find(p=>p.id===editButton.dataset.edit));return;}
+    if(priceButton){
+      const products=await api('/api/admin/products');
+      const product=products.products.find(p=>p.id===priceButton.dataset.price);
+      if(!product)throw new Error('Product not found. Refresh the list.');
+      priceEditing=product;
+      $('priceProduct').textContent=product.name+' · Current price: '+yuan(product.priceCents);
+      $('priceValue').value=(product.priceCents/100).toFixed(2);$('priceError').textContent='';
+      $('priceDialog').showModal();$('priceValue').focus();return;
+    }
     if(toggleButton){
       toggleButton.disabled=true;
       await api('/api/admin/products/'+encodeURIComponent(toggleButton.dataset.toggle)+'/status',{method:'POST',body:JSON.stringify({status:toggleButton.dataset.status})});

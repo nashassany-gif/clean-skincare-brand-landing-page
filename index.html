@@ -1157,6 +1157,8 @@
             ]
           }
         };
+        // Product IDs come from the catalog; inherited object property names are valid IDs too.
+        Object.setPrototypeOf(PRODUCTS, null);
         // Remember the shipped demo copy so the "demo product" disclaimer can drop
         // away as soon as the merchant writes a real description in the admin.
         Object.keys(PRODUCTS).forEach(function (id) {
@@ -1165,7 +1167,7 @@
         });
 
         var ORDER = ["melt", "drench", "keeper", "rest"];
-        function orderedIds() { return liveIds.length ? liveIds : ORDER; }
+        function orderedIds() { return catalogReady ? liveIds : []; }
 
         var bagCount = document.getElementById("bagCount");
         var toast = document.getElementById("toast");
@@ -1186,7 +1188,7 @@
         var catalogReady = false;
         var paymentPollTimer = null;
 
-        var cart = {};
+        var cart = Object.create(null);
         var toastTimer = null;
         var pdId = null;
         var pdQty = 1;
@@ -1257,6 +1259,7 @@
               lastOrder.fulfillmentStatus = o.fulfillmentStatus;
               lastOrder.status = o.status;
               lastOrder.total = o.total;
+              lastOrder.currency = o.currency;
               lastOrder.items = o.items;
               saveLastOrder();
               if (window.location.hash === '#checkout' && changed) renderConfirmation();
@@ -1290,7 +1293,7 @@
           var focused = document.activeElement;
           var focusKey = focused && ['data-inc', 'data-dec', 'data-remove'].find(function (key) { return focused.hasAttribute(key); });
           var focusValue = focusKey && focused.getAttribute(focusKey);
-          var ids = ORDER.filter(function (id) { return cart[id] > 0; });
+          var ids = orderedIds().filter(function (id) { return cart[id] > 0; });
           if (!ids.length) {
             drawerItems.innerHTML =
               '<div class="drawer-empty"><h3>Nothing in here yet.</h3>' +
@@ -1306,14 +1309,14 @@
             var q = cart[id];
             return (
               '<div class="cart-item">' +
-              '<img src="' + p.img + '" alt="" />' +
-              "<div><h3>" + p.name + "</h3>" +
-              '<p class="ci-size">' + p.size + " · " + p.tag + "</p>" +
+              '<img src="' + escapeHTML(p.img) + '" alt="" />' +
+              "<div><h3>" + escapeHTML(p.name) + "</h3>" +
+              '<p class="ci-size">' + escapeHTML(p.size) + " · " + escapeHTML(p.tag) + "</p>" +
               '<div class="ci-controls">' +
               '<span class="qty small">' +
-              '<button type="button" data-dec="' + id + '" aria-label="One less ' + p.name + '">−</button>' +
+              '<button type="button" data-dec="' + id + '" aria-label="One less ' + escapeHTML(p.name) + '">−</button>' +
               '<span class="qty-val">' + q + "</span>" +
-              '<button type="button" data-inc="' + id + '"' + (q >= 9 ? ' disabled' : '') + ' aria-label="One more ' + p.name + '">+</button>' +
+              '<button type="button" data-inc="' + id + '"' + (q >= 9 ? ' disabled' : '') + ' aria-label="One more ' + escapeHTML(p.name) + '">+</button>' +
               "</span>" +
               '<button class="remove-btn" type="button" data-remove="' + id + '">Remove</button>' +
               "</div></div>" +
@@ -1328,6 +1331,7 @@
           }
         }
         function addToCart(id, qty) {
+          if (!catalogReady || liveIds.indexOf(id) < 0 || !PRODUCTS[id]) { showToast('This item is not available.'); return false; }
           var available = Number.isFinite(PRODUCTS[id] && PRODUCTS[id].available) ? PRODUCTS[id].available : 9;
           var maxQty = Math.min(9, available);
           if (maxQty < 1) { showToast('This item is currently sold out.'); return false; }
@@ -1420,14 +1424,14 @@
 
         function runSearch(q) {
           var term = (q || "").trim().toLowerCase();
-          var ids = ORDER.filter(function (id) {
+          var ids = orderedIds().filter(function (id) {
             var p = PRODUCTS[id];
             if (!term) return false;
             return (p.name + " " + p.tag + " " + p.note + " " + p.size).toLowerCase().indexOf(term) !== -1;
           });
           searchResults.innerHTML = ids.map(function (id) {
             var p = PRODUCTS[id];
-            return '<li><a href="#product/' + id + '"><span>' + p.name +
+            return '<li><a href="#product/' + id + '"><span>' + escapeHTML(p.name) +
               '</span><span>' + money(p.price) + '</span></a></li>';
           }).join("");
           searchEmpty.hidden = !(term && !ids.length);
@@ -1482,7 +1486,7 @@
         var TAX_RATE = 0;
         function loadServerCatalog() {
           return apiFetch('/api/products').then(function (res) {
-            if (!res.ok || !res.data) return;
+            if (!res.ok || !res.data) return false;
             var data = res.data;
             catalogReady = true;
             liveIds = [];
@@ -1500,16 +1504,17 @@
               product.name = item.name || product.name;
               product.price = item.price;
               product.available = item.available;
-              if (item.size) product.size = item.size;
-              if (item.description) {
+              product.size = item.size || '';
+              {
                 // The shipped copy is demo text; once the merchant writes their own,
                 // the "demo product" disclaimer must disappear.
                 product.demoCopy = product.demoDesc !== undefined && item.description === product.demoDesc;
-                product.desc = item.description;
+                product.desc = item.description || '';
               }
-              if (item.image) product.img = item.image;
+              product.img = item.image || '';
               if (cart[item.id] > item.available) { if (item.available > 0) cart[item.id] = item.available; else delete cart[item.id]; }
             });
+            Object.keys(cart).forEach(function (id) { if (liveIds.indexOf(id) < 0) delete cart[id]; });
             if (data.shipping) { SHIP_RATES.standard = data.shipping.standard; SHIP_RATES.express = data.shipping.express; FREE_SHIP_OVER = data.shipping.freeOver; }
             if (Number.isFinite(data.taxRate)) TAX_RATE = data.taxRate;
             syncStorefront();
@@ -1517,6 +1522,7 @@
             renderCart();
             if (window.location.hash === '#checkout' && !lastOrder && cartCount()) renderCheckout();
             else if (window.location.hash.indexOf('#product/') === 0) route();
+            return true;
           });
         }
 
@@ -1546,7 +1552,7 @@
               var noteEl = card.querySelector('.card-body .note');
               if (noteEl) noteEl.textContent = product.size + (product.note ? ' · ' + product.note : '');
               var img = card.querySelector('img');
-              if (img && product.img && img.getAttribute('src') !== product.img) { img.setAttribute('src', product.img); img.setAttribute('alt', product.alt || product.name); }
+              if (img) { if (product.img) { img.setAttribute('src', product.img); img.hidden=false; } else { img.removeAttribute('src'); img.hidden=true; } img.setAttribute('alt', product.name); }
               var link = card.querySelector('a[href^="#product/"]');
               if (link) link.setAttribute('aria-label', 'View ' + product.name);
             }
@@ -1567,9 +1573,11 @@
               '<h3><a href="#product/' + id + '">' + escapeHTML(p.name) + '</a></h3>' +
               '<p class="note">' + escapeHTML(p.size) + '</p>' +
               '<div class="card-foot"><span class="price">' + fmt(p.price) + '</span>' +
-              '<button class="add-btn" type="button" data-add="' + id + '">Add to bag</button></div></div>';
+              '<button class="add-btn" type="button" data-add="' + id + '"' + (p.available < 1 ? ' disabled' : '') + '>' + (p.available < 1 ? 'Sold out' : 'Add to bag') + '</button></div></div>';
             grid.appendChild(article);
           });
+          // Keep the server's display order after both first load and later refreshes.
+          liveIds.forEach(function(id){var button=grid.querySelector('[data-add="'+id+'"]');var card=button && button.closest('.card');if(card)grid.appendChild(card);});
         }
 
         function fmt(n) { return "¥" + n.toFixed(2); }
@@ -1631,14 +1639,14 @@
             '<p class="field-msg" id="' + id + '-msg" role="alert"></p></div>';
         }
         function renderCheckout() {
-          var items = ORDER.filter(function (id) { return cart[id] > 0; }).map(function (id) {
+          var items = orderedIds().filter(function (id) { return cart[id] > 0; }).map(function (id) {
             var p = PRODUCTS[id];
             var q = cart[id];
             return (
               '<div class="co-item">' +
-              '<img src="' + p.img + '" alt="" />' +
-              "<div><h3>" + p.name + "</h3>" +
-              '<p class="co-item-meta">' + p.size + " · Qty " + q + "</p></div>" +
+              '<img src="' + escapeHTML(p.img) + '" alt="" />' +
+              "<div><h3>" + escapeHTML(p.name) + "</h3>" +
+              '<p class="co-item-meta">' + escapeHTML(p.size) + " · Qty " + q + "</p></div>" +
               '<span class="co-item-price">' + money(p.price * q) + "</span>" +
               "</div>"
             );
@@ -1694,7 +1702,7 @@
             "No payment is collected and the order will not be shipped while unpaid. No card details are collected." +
             "</div>" +
             '<p class="co-secure"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="10" width="15" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>' +
-            "Prices, shipping and tax are recalculated on the server; the browser never sends a price.</p>" +
+            "Prices, shipping and tax are calculated on the server. Your displayed total is checked before placing the order.</p>" +
             "</div>" +
 
             '<div class="field"><label><input id="coDemoConsent" type="checkbox" required style="width:auto"> I understand this is a fictional demo and will use fictional contact data only.</label><p>I have read the <a href="/policies/index.html#privacy" target="_blank" rel="noopener">data disclosure</a> and <a href="/policies/index.html#terms" target="_blank" rel="noopener">policy readiness notice</a>.</p><p class="field-msg" role="status"></p></div>' +
@@ -1769,7 +1777,7 @@
           form.addEventListener("submit", function (e) {
             e.preventDefault();
             var errBox = document.getElementById("coFormError");
-            if (!catalogReady) { errBox.textContent = 'Current pricing and stock could not be loaded. Refresh and try again; no order was sent.'; errBox.classList.add('show'); return; }
+            if (!catalogReady || !cartCount()) { errBox.textContent = 'Your bag is empty or current pricing could not be loaded. Review your bag before ordering.'; errBox.classList.add('show'); return; }
             if (!validateCheckout()) {
               errBox.classList.add("show");
               var first = checkoutPage.querySelector(".field.error input, .field.error select");
@@ -1778,16 +1786,17 @@
             }
             errBox.classList.remove("show");
             var method = shipMethod();
-            var items = ORDER.filter(function (id) { return cart[id] > 0; }).map(function (id) {
-              return { id: id, qty: cart[id] };
+            var items = orderedIds().filter(function (id) { return cart[id] > 0; }).map(function (id) {
+              return { id: id, qty: cart[id], expectedUnitPriceCents: Math.round(PRODUCTS[id].price * 100) };
             });
             var placeBtn = document.getElementById("placeOrderBtn");
             if (placeBtn) { placeBtn.disabled = true; placeBtn.textContent = "Placing order…"; }
 
-            /* Only ids and quantities cross the wire. The server owns prices, shipping,
-               tax and the order number — nothing here can be trusted to be authoritative. */
+            /* Expected prices are comparison-only; the server owns all actual prices,
+               shipping, tax and order numbers. */
             var orderRequest = {
               items: items,
+              expectedTotalCents: Math.round(coTotals().total * 100),
               shipping: method,
               customer: {
                 email: document.getElementById("coEmail").value.trim(),
@@ -1811,6 +1820,22 @@
             }
             apiFetch("/api/orders", orderRequest, { "Idempotency-Key": checkoutRetry.key })
               .then(function (res) {
+                if (!res.ok && ['price_changed','catalog_changed'].indexOf(res.data.code) >= 0) {
+                  var values = {};
+                  form.querySelectorAll('input[id], select[id]').forEach(function(el){ values[el.id]={value:el.value,checked:el.checked}; });
+                  var selectedShipping = method;
+                  loadServerCatalog().then(function(ok){
+                    if (!ok) { errBox.textContent = res.message + ' Could not refresh the catalog; please try again.'; errBox.classList.add('show'); if(placeBtn)placeBtn.disabled=false; return; }
+                    if (!cartCount()) renderCheckout();
+                    Object.keys(values).forEach(function(id){var el=document.getElementById(id);if(el){el.value=values[id].value;if(el.type==='checkbox')el.checked=values[id].checked;}});
+                    var radio=checkoutPage.querySelector('input[name="coShip"][value="'+selectedShipping+'"]');if(radio)radio.checked=true;
+                    updateCoTotals();
+                    var updatedError=document.getElementById('coFormError');
+                    updatedError.textContent=res.message+' Your bag and totals have been refreshed. Please review and submit again; no order was placed.';
+                    updatedError.classList.add('show');updatedError.focus();checkoutRetry=null;
+                  });
+                  return;
+                }
                 if (!res.ok) {
                   errBox.textContent = "We couldn't place the order — " + res.message;
                   errBox.classList.add("show");
@@ -1832,6 +1857,7 @@
                   name: d.order.customer.firstName,
                   count: d.order.itemCount,
                   total: d.order.total,
+                  currency: d.order.currency,
                   eta: coEta(d.order.shipping === "express" ? 2 : 5),
                   items: d.order.items || items,
                   status: d.order.status,
@@ -1842,7 +1868,7 @@
                 };
                 saveLastOrder();
                 checkoutRetry = null;
-                cart = {};
+                cart = Object.create(null);
                 syncBadge();
                 renderConfirmation();
                 focusPage(checkoutPage, 'Unpaid order recorded');
@@ -1850,18 +1876,19 @@
               });
           });
         }
+        function orderMoney(value, currency) {
+          return escapeHTML((currency || 'unknown').toUpperCase()) + ' ' + Number(value).toFixed(2);
+        }
         function renderConfirmation() {
           var o = lastOrder;
           if (!o) return;
           if (!o.items) { checkoutPage.innerHTML = '<div class="wrap checkout-page"><h1>Loading saved order…</h1><p>Order details are retrieved from the server. If unavailable, try again.</p><button type="button" class="btn" id="refreshOrderBtn">Refresh order status</button> <button type="button" id="forgetOrderBtn">Forget this order on this device</button></div>'; return; }
           var items = o.items.map(function (it) {
-            var p = PRODUCTS[it.id];
             return (
               '<div class="co-item">' +
-              '<img src="' + p.img + '" alt="" />' +
-              "<div><h3>" + p.name + "</h3>" +
-              '<p class="co-item-meta">' + p.size + " · Qty " + it.qty + "</p></div>" +
-              '<span class="co-item-price">' + fmt(Number.isFinite(it.lineTotalCents) ? it.lineTotalCents / 100 : p.price * it.qty) + "</span>" +
+              "<div><h3>" + escapeHTML(it.name) + "</h3>" +
+              '<p class="co-item-meta">' + escapeHTML(it.size) + " · Qty " + it.qty + "</p></div>" +
+              '<span class="co-item-price">' + orderMoney(it.lineTotalCents / 100, o.currency) + "</span>" +
               "</div>"
             );
           }).join("");
@@ -1870,7 +1897,7 @@
             '<div class="tick"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg></div>' +
             "<h1>Thank you, " + escapeHTML(o.name) + ".</h1>" +
             '<p class="co-order-num">Order ' + escapeHTML(o.number) + "</p>" +
-            "<p>Your order of " + o.count + (o.count === 1 ? " item" : " items") + " — " + fmt(o.total) +
+            "<p>Your order of " + o.count + (o.count === 1 ? " item" : " items") + " — " + orderMoney(o.total, o.currency) +
             " — is recorded for " + escapeHTML(o.email) + ". No confirmation email is currently sent.</p>" +
             '<p class="co-demo-note" id="orderPaymentNotice"><strong>' + escapeHTML(o.paymentMessage || (paymentEnabled ? 'Payment has not yet been verified.' : 'WeChat Pay is not available. This order is unpaid.')) + '</strong><br>' +
             'Fulfilment: ' + escapeHTML(o.fulfillmentStatus || 'pending') + '.' +
@@ -1880,7 +1907,7 @@
               '<button type="button" id="queryPaymentBtn">Check provider payment status</button><p id="paymentMessage" role="status"></p><img id="paymentQr" alt="WeChat Pay QR code" hidden><a id="paymentLink" hidden rel="noopener noreferrer" target="_blank">Open payment link</a></div>' : '') +
             '<div class="co-confirm-card"><div class="co-items">' + items + "</div>" +
             '<div class="co-totals"><div class="co-row co-total" style="border-top:0; margin-top:0;"><span>' +
-            'Order total · ' + escapeHTML(o.paymentStatus || 'unpaid') + "</span><strong>" + fmt(o.total) + "</strong></div></div></div>" +
+            'Order total · ' + escapeHTML(o.paymentStatus || 'unpaid') + "</span><strong>" + orderMoney(o.total, o.currency) + "</strong></div></div></div>" +
             '<p><button class="btn" id="refreshOrderBtn" type="button">Refresh order status</button> ' + (['unpaid','processing','failed'].indexOf(o.paymentStatus)>=0 && o.fulfillmentStatus!=='cancelled' ? '<button class="btn" id="cancelOrderBtn" type="button">Cancel unpaid order</button>' : '') + '</p>' +
             '<p><button type="button" id="forgetOrderBtn">Forget this order on this device</button></p>' +
             '<a class="btn" href="#shop">Continue shopping</a>' +
@@ -2003,7 +2030,7 @@
             return;
           }
           checkoutPage.hidden = true;
-          if (m && PRODUCTS[m[1]]) {
+          if (m && catalogReady && liveIds.indexOf(m[1]) >= 0 && PRODUCTS[m[1]]) {
             renderProduct(m[1]);
             main.hidden = true;
             productPage.hidden = false;
