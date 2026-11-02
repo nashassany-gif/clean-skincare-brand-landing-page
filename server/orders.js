@@ -39,11 +39,11 @@ function normaliseItems(rawItems){
   for(const raw of rawItems){
     if(!raw||typeof raw!=='object'||Array.isArray(raw))return{ok:false,message:'Malformed bag item.'};
     const id=typeof raw.id==='string'?raw.id:'';const qty=raw.qty;
-    if(!catalog.getProduct(id))return{ok:false,message:`Unknown product: ${id}`};
+    if(!catalog.getOrderable(id))return{ok:false,message:`This product is not available: ${id}`};
     if(!Number.isSafeInteger(qty)||qty<1)return{ok:false,message:`Invalid quantity for ${id}.`};
     const next=(merged.get(id)||0)+qty;if(next>catalog.MAX_QTY_PER_LINE)return{ok:false,message:`You can order at most ${catalog.MAX_QTY_PER_LINE} of ${id}.`};merged.set(id,next);
   }
-  return{ok:true,items:catalog.ORDER.filter(id=>merged.has(id)).map(id=>{const p=catalog.getProduct(id),qty=merged.get(id);return{id,name:p.name,size:p.size,qty,unitPriceCents:p.priceCents,lineTotalCents:p.priceCents*qty};})};
+  return{ok:true,items:[...merged.keys()].sort((a,b)=>(catalog.getProduct(a).sort-catalog.getProduct(b).sort)||(a<b?-1:1)).map(id=>{const p=catalog.getOrderable(id),qty=merged.get(id);return{id,name:p.name,size:p.size,qty,unitPriceCents:p.priceCents,lineTotalCents:p.priceCents*qty};})};
 }
 function priceOrder(items,shippingMethod){
   const subtotalCents=items.reduce((s,i)=>s+i.lineTotalCents,0);const method=shippingMethod==null?'standard':shippingMethod;
@@ -73,7 +73,7 @@ function createOrder({items:rawItems,shipping,customer,idempotencyKey}){
     if(old){if(old.fingerprint!==fp)return{ok:false,status:409,message:'This Idempotency-Key was already used for a different request.'};return{ok:true,replayed:true,order:store.getOrder(old.order_number),orderToken:(()=>{const row=db.prepare('SELECT token_ciphertext FROM orders WHERE number=?').get(old.order_number);return row&&row.token_ciphertext?tokens.open(row.token_ciphertext):null;})()};}
     for(const item of normal.items)if(store.availableStock(item.id)<item.qty)return{ok:false,status:409,message:`Not enough ${item.name} in stock.`};
     const n=number(),at=new Date(),token=crypto.randomBytes(32).toString('base64url');
-    db.prepare(`INSERT INTO orders(number,created_at,updated_at,expires_at,currency,subtotal_cents,shipping_cents,tax_cents,total_cents,shipping_method,tax_rate,customer_json,token_hash,token_ciphertext,payment_status,fulfillment_status,provider) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(n,at.toISOString(),at.toISOString(),new Date(at.getTime()+RESERVATION_TTL_MS).toISOString(),'usd',totals.subtotalCents,totals.shippingCents,totals.taxCents,totals.totalCents,totals.shippingMethod,totals.taxRate,JSON.stringify(safe),store.hash(token),tokens.seal(token),'unpaid','pending','wechatpay');
+    db.prepare(`INSERT INTO orders(number,created_at,updated_at,expires_at,currency,subtotal_cents,shipping_cents,tax_cents,total_cents,shipping_method,tax_rate,customer_json,token_hash,token_ciphertext,payment_status,fulfillment_status,provider) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(n,at.toISOString(),at.toISOString(),new Date(at.getTime()+RESERVATION_TTL_MS).toISOString(),catalog.CURRENCY,totals.subtotalCents,totals.shippingCents,totals.taxCents,totals.totalCents,totals.shippingMethod,totals.taxRate,JSON.stringify(safe),store.hash(token),tokens.seal(token),'unpaid','pending','wechatpay');
     for(const i of normal.items){db.prepare('INSERT INTO order_items VALUES(?,?,?,?,?,?,?)').run(n,i.id,i.name,i.size,i.qty,i.unitPriceCents,i.lineTotalCents);db.prepare("INSERT INTO stock_ledger(order_number,product_id,qty,action,created_at) VALUES(?,?,?,'reserve',?)").run(n,i.id,i.qty,at.toISOString());}
     db.prepare('INSERT INTO idempotency VALUES(?,?,?,?)').run(idempotencyKey,fp,n,at.toISOString());store.event(n,'order.created');
     return{ok:true,replayed:false,order:store.getOrder(n),orderToken:token};

@@ -8,6 +8,7 @@ const orders=require('./orders');
 const payments=require('./payments');
 const webhook=require('./webhook');
 const admin=require('./admin');
+const images=require('./images');
 const {db}=require('./database');
 const {clientIp}=require('./network');
 const limits=require('./rate-limit');
@@ -17,6 +18,11 @@ const MIME={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=u
 function allowOrderCreation(req){return limits.consume('order-create',clientIp(req),4,30*60*1000);}
 function sendJson(res,status,obj,headers={}){const body=JSON.stringify(obj);res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Content-Length':Buffer.byteLength(body),'Cache-Control':'no-store','X-Content-Type-Options':'nosniff',...headers});res.end(body);}
 function readBody(req,limit=100*1024){return new Promise((resolve,reject)=>{const chunks=[];let size=0;req.on('data',c=>{size+=c.length;if(size>limit){reject(Object.assign(new Error('Payload too large.'),{status:413}));req.destroy();}else chunks.push(c);});req.on('end',()=>resolve(Buffer.concat(chunks)));req.on('error',reject);});}
+/**
+ * Read a body up to `limit`, but keep draining past it so the client still gets a
+ * 413 response instead of a reset connection. Memory stays bounded.
+ */
+function readBodyDrain(req,limit){return new Promise((resolve,reject)=>{const chunks=[];let size=0,overflow=false;req.on('data',c=>{size+=c.length;if(size>limit)overflow=true;else chunks.push(c);});req.on('end',()=>resolve({buffer:Buffer.concat(chunks),overflow}));req.on('error',reject);});}
 async function readJson(req){const raw=await readBody(req);if(!raw.length)return{};try{return JSON.parse(raw.toString('utf8'));}catch(_){throw Object.assign(new Error('Body must be valid JSON.'),{status:400});}}
 function serveFile(res,target,download=false){fs.stat(target,(err,stat)=>{if(err||!stat.isFile())return sendJson(res,404,{ok:false,message:'Not found.'});const ext=path.extname(target);res.writeHead(200,{'Content-Type':MIME[ext]||'application/octet-stream','Content-Length':stat.size,'Cache-Control':['.html','.js','.css'].includes(ext)?'no-cache':'public, max-age=86400','X-Content-Type-Options':'nosniff'});fs.createReadStream(target).pipe(res);});}
 function serveStatic(req,res,pathname){let decoded;try{decoded=decodeURIComponent(pathname);}catch(_){return sendJson(res,400,{ok:false,message:'Malformed path.'});}if(decoded.includes('\0'))return sendJson(res,400,{ok:false,message:'Malformed path.'});const target=path.resolve(ROOT,'.'+(decoded==='/'?'/index.html':decoded)),rel=path.relative(ROOT,target);if(rel.startsWith('..')||path.isAbsolute(rel))return sendJson(res,403,{ok:false,message:'Forbidden.'});const first=rel.split(path.sep)[0];if(rel!=='index.html'&&!['assets','policies'].includes(first))return sendJson(res,404,{ok:false,message:'Not found.'});serveFile(res,target);}
@@ -86,6 +92,29 @@ async function handleAdmin(req,res,pathname){const method=req.method;
   if(pathname==='/api/admin/stats'&&method==='GET')return sendJson(res,200,{ok:true,stats:{...store.stats(),unallocated:orders.unallocatedOrders().length,pendingRefunds:orders.pendingRefunds().length,webhookFailuresLastHour:db.prepare('SELECT COUNT(*) n FROM webhook_failures WHERE created_at>=?').get(new Date(Date.now()-3600000).toISOString()).n}});
   if(pathname==='/api/admin/orders'&&method==='GET'){const q=new URL(req.url,'http://localhost').searchParams;const result=store.listOrders({q:(q.get('q')||'').slice(0,100),paymentStatus:q.get('paymentStatus')||'',fulfillmentStatus:q.get('fulfillmentStatus')||'',from:q.get('from')||'',to:q.get('to')||'',page:q.get('page'),pageSize:q.get('pageSize'),sort:q.get('sort')});result.orders=result.orders.map(adminOrder);return sendJson(res,200,{ok:true,...result});}
   if(pathname==='/api/admin/unallocated'&&method==='GET')return sendJson(res,200,{ok:true,orders:orders.unallocatedOrders().map(adminOrder)});
+  const productMatch=pathname.match(/^\/api\/admin\/products(?:\/([a-z0-9-]+)(?:\/(status|image))?)?$/);
+  if(productMatch){
+    const id=productMatch[1],sub=productMatch[2];
+    if(!id&&method==='GET')return sendJson(res,200,{ok:true,products:catalog.listAll(),currency:catalog.CURRENCY});
+    if(!id&&method==='POST'){const r=catalog.createProduct(await readJson(req),session.username);return sendJson(res,r.status||(r.ok?201:400),r.ok?{ok:true,product:r.product}:{ok:false,message:r.message});}
+    if(id&&!sub&&method==='PATCH'){const r=catalog.updateProduct(id,await readJson(req),session.username);return sendJson(res,r.status||200,r.ok?{ok:true,product:r.product}:{ok:false,message:r.message});}
+    if(id&&sub==='status'&&method==='POST'){const body=await readJson(req);const r=catalog.setStatus(id,body.status,session.username);return sendJson(res,r.status||200,r.ok?{ok:true,product:r.product}:{ok:false,message:r.message});}
+    if(id&&sub==='image'&&method==='POST'){
+      const type=String(req.headers['content-type']||'').split(';')[0].trim().toLowerCase();
+      if(!['image/jpeg','image/png','image/webp'].includes(type))return sendJson(res,400,{ok:false,message:'Content-Type must be image/jpeg, image/png or image/webp.'});
+      const body=await readBodyDrain(req,images.MAX_BYTES);
+      if(body.overflow)return sendJson(res,413,{ok:false,message:'Image must be 2 MB or smaller.'});
+      let publicPath;try{publicPath=images.save(body.buffer);}catch(err){return sendJson(res,err.status||400,{ok:false,message:err.message});}
+      const before=catalog.getProduct(id);
+      const r=catalog.updateProduct(id,{image:publicPath},session.username);
+      if(!r.ok){images.remove(publicPath);return sendJson(res,r.status||400,{ok:false,message:r.message});}
+      if(before&&before.image&&before.image.startsWith('/uploads/'))images.remove(before.image);
+      return sendJson(res,200,{ok:true,product:r.product});
+    }
+    if(id&&sub==='image'&&method==='DELETE'){const p=catalog.getProduct(id);if(!p)return sendJson(res,404,{ok:false,message:'Product not found.'});const r=catalog.updateProduct(id,{image:''},session.username);if(r.ok&&p.image)images.remove(p.image);return sendJson(res,200,{ok:true,product:r.product});}
+    if(id&&!sub&&method==='DELETE'){const r=catalog.deleteProduct(id,session.username);if(r.ok&&r.image&&r.image.startsWith('/uploads/'))images.remove(r.image);return sendJson(res,r.status||200,r.ok?{ok:true}:{ok:false,message:r.message});}
+    return sendJson(res,404,{ok:false,message:'Unknown endpoint.'});
+  }
   const match=pathname.match(/^\/api\/admin\/orders\/([A-Za-z0-9-]+)(?:\/(fulfillment|cancel|payment(?:\/query)?|reconcile|refunds(?:\/[^/]+)?))?$/);
   if(match){const o=store.getOrder(match[1]);if(!o)return sendJson(res,404,{ok:false,message:'Order not found.'});const action=match[2];
     if(action&&(action==='reconcile'||action.startsWith('refunds'))&&session.role!=='owner')return sendJson(res,403,{ok:false,message:'Owner role required for refunds and reconciliation.'});
@@ -111,8 +140,8 @@ async function handleAdmin(req,res,pathname){const method=req.method;
 }
 async function handleApi(req,res,pathname){const method=req.method;
   if(pathname.startsWith('/api/admin/'))return handleAdmin(req,res,pathname);
-  if(pathname==='/api/health'&&method==='GET')return sendJson(res,200,{ok:true,database:'sqlite',paymentProvider:'wechatpay',paymentEnabled:payments.readiness({currency:'usd'}).ok,currency:'usd',time:new Date().toISOString()});
-  if(pathname==='/api/products'&&method==='GET')return sendJson(res,200,{ok:true,currency:'usd',shipping:{standard:6,express:16,freeOver:75},taxRate:catalog.TAX_RATE,products:catalog.ORDER.map(id=>{const p=catalog.getProduct(id);return{id,name:p.name,size:p.size,price:p.priceCents/100,available:store.availableStock(id)};})});
+  if(pathname==='/api/health'&&method==='GET')return sendJson(res,200,{ok:true,database:'sqlite',paymentProvider:'wechatpay',paymentEnabled:payments.readiness({currency:catalog.CURRENCY}).ok,currency:catalog.CURRENCY,time:new Date().toISOString()});
+  if(pathname==='/api/products'&&method==='GET')return sendJson(res,200,{ok:true,currency:catalog.CURRENCY,shipping:{standard:catalog.SHIPPING.standard.cents/100,express:catalog.SHIPPING.express.cents/100,freeOver:catalog.SHIPPING.standard.freeOverCents/100},taxRate:catalog.TAX_RATE,products:catalog.listPublic().map(p=>({id:p.id,name:p.name,size:p.size,price:p.priceCents/100,description:p.description,image:p.image,available:p.available}))});
   if(pathname==='/api/orders'&&method==='POST'){const limit=allowOrderCreation(req);if(!limit.allowed)return sendJson(res,429,{ok:false,message:'Too many order attempts. Please try again later.'},{'Retry-After':String(limit.retryAfter)});const body=await readJson(req);const r=orders.createOrder({items:body.items,shipping:body.shipping,customer:body.customer,idempotencyKey:req.headers['idempotency-key']});if(!r.ok)return sendJson(res,r.status||400,{ok:false,message:r.message});return sendJson(res,r.replayed?200:201,{ok:true,replayed:r.replayed,orderToken:r.orderToken||null,order:orders.publicOrder(r.order)});}
   const orderMatch=pathname.match(/^\/api\/orders\/([A-Za-z0-9-]+)$/);if(orderMatch&&method==='GET'){const o=store.getOrder(orderMatch[1]);if(!orders.canAccessOrder(o,req.headers['x-order-token']))return sendJson(res,404,{ok:false,message:'Order not found.'});return sendJson(res,200,{ok:true,order:orders.publicOrder(o)});}
   const cancelMatch=pathname.match(/^\/api\/orders\/([A-Za-z0-9-]+)\/cancel$/);if(cancelMatch&&method==='POST'){const o=store.getOrder(cancelMatch[1]);if(!orders.canAccessOrder(o,req.headers['x-order-token']))return sendJson(res,404,{ok:false,message:'Order not found.'});const r=orders.cancel(o.number);return sendJson(res,r.status||200,r.ok?{ok:true,order:orders.publicOrder(r.order)}:{ok:false,message:r.message});}
@@ -128,6 +157,37 @@ async function handleApi(req,res,pathname){const method=req.method;
   if(pathname==='/api/newsletter'&&method==='POST'){if(process.env.LOAM_NEWSLETTER_COLLECTION_ENABLED!=='true')return sendJson(res,503,{ok:false,message:'Newsletter collection is disabled until privacy consent and an email provider are configured. No address was saved.'});const allowed=limits.consume('newsletter',clientIp(req),5,60*60*1000);if(!allowed.allowed)return sendJson(res,429,{ok:false,message:'Too many subscription attempts.'},{'Retry-After':String(allowed.retryAfter)});const body=await readJson(req),email=typeof body.email==='string'?body.email.trim().toLowerCase():'';if(email.length>254||!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email))return sendJson(res,400,{ok:false,message:'That email address looks incomplete.'});const duplicate=store.addNewsletter(email);return sendJson(res,duplicate?200:201,{ok:true,duplicate,message:duplicate?'You are already on the list.':'Subscribed.'});}
   return sendJson(res,404,{ok:false,message:'Unknown endpoint.'});
 }
-const server=http.createServer(async(req,res)=>{let pathname;try{pathname=new URL(req.url,'http://localhost').pathname;}catch(_){return sendJson(res,400,{ok:false,message:'Bad request.'});}res.setHeader('Referrer-Policy','strict-origin-when-cross-origin');const isLoginPage=pathname==='/admin/login'||pathname==='/admin';res.setHeader('X-Frame-Options',isLoginPage?'DENY':'SAMEORIGIN');res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors "+(isLoginPage?"'none'":"'self'")+"; base-uri 'self'; form-action 'self'");try{if(pathname==='/admin/login'||pathname==='/admin')return serveFile(res,path.join(ROOT,'admin',pathname==='/admin/login'?'login.html':'index.html'));if(pathname.startsWith('/admin/')){if(!['/admin/admin.css','/admin/admin.js','/admin/login.js'].includes(pathname))return sendJson(res,404,{ok:false,message:'Not found.'});return serveFile(res,path.join(ROOT,pathname));}if(pathname.startsWith('/api/'))await handleApi(req,res,pathname);else serveStatic(req,res,pathname);}catch(err){if((err.status||500)>=500)console.error('[request_error]',err.code||err.name);if(!res.headersSent)sendJson(res,err.status||500,{ok:false,message:(err.status||500)>=500?'Server error.':err.message});}});
-if(require.main===module){server.listen(PORT,HOST,()=>console.log(`loam shop listening on http://${HOST}:${PORT} (payments ${payments.enabled()?'enabled':'disabled'})`));const sweep=setInterval(()=>{try{orders.expireReservations();}catch(err){console.error('[stock_sweep]',err.code||err.name);}},60*1000);sweep.unref();const close=()=>server.close(()=>{store.close();process.exit(0);});process.on('SIGTERM',close);process.on('SIGINT',close);}
+const server=http.createServer(async(req,res)=>{let pathname;try{pathname=new URL(req.url,'http://localhost').pathname;}catch(_){return sendJson(res,400,{ok:false,message:'Bad request.'});}res.setHeader('Referrer-Policy','strict-origin-when-cross-origin');const isLoginPage=pathname==='/admin/login'||pathname==='/admin';res.setHeader('X-Frame-Options',isLoginPage?'DENY':'SAMEORIGIN');res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors "+(isLoginPage?"'none'":"'self'")+"; base-uri 'self'; form-action 'self'");try{if(pathname==='/admin/login'||pathname==='/admin')return serveFile(res,path.join(ROOT,'admin',pathname==='/admin/login'?'login.html':'index.html'));
+if(pathname==='/admin/products')return serveFile(res,path.join(ROOT,'admin','products.html'));
+if(pathname.startsWith('/admin/')){if(!['/admin/admin.css','/admin/admin.js','/admin/login.js','/admin/products.js'].includes(pathname))return sendJson(res,404,{ok:false,message:'Not found.'});return serveFile(res,path.join(ROOT,pathname));}if(pathname.startsWith('/uploads/')){if(req.method!=='GET'&&req.method!=='HEAD')return sendJson(res,405,{ok:false,message:'Method not allowed.'});let decoded;try{decoded=decodeURIComponent(pathname);}catch(_){return sendJson(res,400,{ok:false,message:'Malformed path.'});}const target=images.resolve(decoded);if(!target)return sendJson(res,404,{ok:false,message:'Not found.'});return serveFile(res,target);}if(pathname.startsWith('/api/'))await handleApi(req,res,pathname);else serveStatic(req,res,pathname);}catch(err){if((err.status||500)>=500)console.error('[request_error]',err.code||err.name);if(!res.headersSent)sendJson(res,err.status||500,{ok:false,message:(err.status||500)>=500?'Server error.':err.message});}});
+if(require.main===module){server.listen(PORT,HOST,()=>console.log(`loam shop listening on http://${HOST}:${PORT} (payments ${payments.enabled()?'enabled':'disabled'})`));const sweep=setInterval(()=>{try{orders.expireReservations();}catch(err){console.error('[stock_sweep]',err.code||err.name);}},60*1000);sweep.unref();const reconcile=setInterval(()=>{reconcileProviderPayments().catch(err=>console.error('[payment_reconcile]',err.code||err.name));},2*60*1000);reconcile.unref();const close=()=>server.close(()=>{store.close();process.exit(0);});process.on('SIGTERM',close);process.on('SIGINT',close);}
+/**
+ * Safety net for missed/blocked payment callbacks. While an order shows a QR,
+ * the provider holds the truth: query it and apply only signature-verified
+ * results (queryAndApplyPayment never marks paid from an unverified payload).
+ * Expired attempts are closed at the provider so a customer cannot pay into a
+ * cancelled reservation. Runs only when the provider is enabled.
+ */
+async function reconcileProviderPayments(){
+  if(!payments.enabled())return;
+  const rows=db.prepare("SELECT o.number FROM orders o JOIN payment_intents pi ON pi.order_number=o.number WHERE o.provider_transaction_id IS NULL AND o.payment_status IN ('processing','failed') AND pi.created_at>=? ORDER BY pi.created_at DESC LIMIT 50").all(new Date(Date.now()-24*3600*1000).toISOString());
+  for(const {number} of rows){
+    try{
+      orders.expireReservations();
+      const order=store.getOrder(number);
+      if(!order)continue;
+      const result=await queryAndApplyPayment(order,'reconciler');
+      const state=result&&result.payment&&result.payment.trade_state;
+      if(state==='NOTPAY'||state==='USERPAYING'){
+        const fresh=store.getOrder(number);
+        if(fresh&&fresh.expiresAt&&Date.parse(fresh.expiresAt)<=Date.now()){
+          await payments.closePayment(fresh).catch(()=>{});
+          orders.applyTradeState(number,'failed',{trade_state:'CLOSED'},'reconciler');
+        }else if(fresh&&fresh.paymentStatus==='failed'){
+          await payments.closePayment(fresh).catch(()=>{});
+        }
+      }
+    }catch(err){console.error('[payment_reconcile]',number,err.code||err.name);}
+  }
+}
 module.exports={server};

@@ -108,6 +108,14 @@ const migrations = [
   { version: 6, sql: `
     CREATE TABLE IF NOT EXISTS webhook_failures (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, status INTEGER NOT NULL, code TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS idx_webhook_failures_created ON webhook_failures(created_at);
+  ` },
+  { version: 7, sql: `
+    ALTER TABLE products ADD COLUMN description TEXT NOT NULL DEFAULT '';
+    ALTER TABLE products ADD COLUMN image TEXT NOT NULL DEFAULT '';
+    ALTER TABLE products ADD COLUMN status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('draft','active','archived'));
+    ALTER TABLE products ADD COLUMN sort INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE products ADD COLUMN created_at TEXT NOT NULL DEFAULT '';
+    ALTER TABLE products ADD COLUMN updated_at TEXT NOT NULL DEFAULT '';
   ` }
 ];
 
@@ -166,11 +174,20 @@ function migrate() {
     }
     const columns = db.prepare('PRAGMA table_info(orders)').all().map(c => c.name);
     if (!columns.includes('token_ciphertext')) db.exec("ALTER TABLE orders ADD COLUMN token_ciphertext TEXT NOT NULL DEFAULT ''");
-    const insert = db.prepare('INSERT INTO products VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING');
-    for (const id of catalog.ORDER) {
-      const p = catalog.getProduct(id);
-      insert.run(id, p.name, p.size, p.priceCents, p.stock);
+    // Seed the demo catalog only into an empty products table. Existing
+    // databases keep their rows untouched; v7 backfills demo text/images
+    // for the four known seed ids so older databases render identically.
+    if (!db.prepare('SELECT 1 FROM products LIMIT 1').get()) {
+      const now = new Date().toISOString();
+      const insert = db.prepare('INSERT INTO products(id,name,size,price_cents,stock,description,image,status,sort,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
+      for (const p of catalog.SEED_PRODUCTS) {
+        insert.run(p.id, p.name, p.size, p.priceCents, p.stock, p.description, p.image, 'active', p.sort, now, now);
+      }
     }
+    const backfill = db.prepare("UPDATE products SET description=?, image=?, sort=? WHERE id=? AND created_at='' AND image=''");
+    const nowIso = new Date().toISOString();
+    for (const p of catalog.SEED_PRODUCTS) backfill.run(p.description, p.image, p.sort, p.id);
+    db.prepare("UPDATE products SET created_at=?, updated_at=? WHERE created_at=''").run(nowIso, nowIso);
   });
 }
 migrate();

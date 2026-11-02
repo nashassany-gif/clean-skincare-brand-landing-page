@@ -779,7 +779,7 @@
             <article class="step">
               <a href="#product/melt" aria-label="View Melt Cleansing Oil"><img src="assets/images/product-melt.webp" alt="Amber glass pump bottle of Melt cleansing oil on pale stone with water droplets"  width="1254" height="1254" loading="lazy" decoding="async" /></a>
               <div class="step-body">
-                <div class="step-top"><span class="step-num">Step 01</span><span class="step-price">$46</span></div>
+                <div class="step-top"><span class="step-num">Step 01</span><span class="step-price">¥46</span></div>
                 <h3>Cleanse</h3>
                 <p class="product-name">Melt — Cleansing Oil</p>
                 <p class="desc">An illustrative cleansing-oil concept in amber glass. Sample directions and skin effects are not verified.</p>
@@ -794,7 +794,7 @@
             <article class="step">
               <a href="#product/drench" aria-label="View Drench Renewal Serum"><img src="assets/images/product-drench.webp" alt="Amber glass dropper bottle of Drench serum on travertine stone beside an olive sprig"  width="1254" height="1254" loading="lazy" decoding="async" /></a>
               <div class="step-body">
-                <div class="step-top"><span class="step-num">Step 02</span><span class="step-price">$68</span></div>
+                <div class="step-top"><span class="step-num">Step 02</span><span class="step-price">¥68</span></div>
                 <h3>Treat</h3>
                 <p class="product-name">Drench — Renewal Serum</p>
                 <p class="desc">An illustrative serum concept featuring botanical references. No formula performance or skin benefit is verified.</p>
@@ -809,7 +809,7 @@
             <article class="step">
               <a href="#product/keeper" aria-label="View Keeper Barrier Cream"><img src="assets/images/product-keeper.webp" alt="Low amber glass jar of Keeper barrier cream with a stone lid on a travertine block"  width="1254" height="1254" loading="lazy" decoding="async" /></a>
               <div class="step-body">
-                <div class="step-top"><span class="step-num">Step 03</span><span class="step-price">$54</span></div>
+                <div class="step-top"><span class="step-num">Step 03</span><span class="step-price">¥54</span></div>
                 <h3>Seal</h3>
                 <p class="product-name">Keeper — Barrier Cream</p>
                 <p class="desc">An illustrative cream concept in a stone-lidded jar. Texture and ingredient stories are examples, not tested benefits.</p>
@@ -921,7 +921,7 @@
                 <h3><a href="#product/melt">Melt Cleansing Oil</a></h3>
                 <p class="note">150 ml · about 3 months of evenings</p>
                 <div class="card-foot">
-                  <span class="price">$46</span>
+                  <span class="price">¥46</span>
                   <button class="add-btn" type="button" data-add="melt">Add to bag</button>
                 </div>
               </div>
@@ -933,7 +933,7 @@
                 <h3><a href="#product/drench">Drench Renewal Serum</a></h3>
                 <p class="note">30 ml · bakuchiol 1% + squalane</p>
                 <div class="card-foot">
-                  <span class="price">$68</span>
+                  <span class="price">¥68</span>
                   <button class="add-btn" type="button" data-add="drench">Add to bag</button>
                 </div>
               </div>
@@ -945,7 +945,7 @@
                 <h3><a href="#product/keeper">Keeper Barrier Cream</a></h3>
                 <p class="note">50 ml · the winter favourite</p>
                 <div class="card-foot">
-                  <span class="price">$54</span>
+                  <span class="price">¥54</span>
                   <button class="add-btn" type="button" data-add="keeper">Add to bag</button>
                 </div>
               </div>
@@ -957,7 +957,7 @@
                 <h3><a href="#product/rest">Rest Clay Mask</a></h3>
                 <p class="note">75 ml · terracotta clay, ten quiet minutes</p>
                 <div class="card-foot">
-                  <span class="price">$38</span>
+                  <span class="price">¥38</span>
                   <button class="add-btn" type="button" data-add="rest">Add to bag</button>
                 </div>
               </div>
@@ -1084,7 +1084,7 @@
       </div>
       <div class="drawer-items" id="drawerItems"></div>
       <div class="drawer-foot" id="drawerFoot">
-        <div class="subtotal-row"><span>Subtotal</span><strong id="subtotalVal">$0</strong></div>
+        <div class="subtotal-row"><span>Subtotal</span><strong id="subtotalVal">¥0</strong></div>
         <p class="drawer-note">Shipping and tax are calculated at checkout. Orders remain unpaid until a verified payment is available.</p>
         <button class="btn checkout-btn" id="checkoutBtn" type="button">Checkout</button>
       </div>
@@ -1157,7 +1157,15 @@
             ]
           }
         };
+        // Remember the shipped demo copy so the "demo product" disclaimer can drop
+        // away as soon as the merchant writes a real description in the admin.
+        Object.keys(PRODUCTS).forEach(function (id) {
+          PRODUCTS[id].demoDesc = PRODUCTS[id].desc;
+          PRODUCTS[id].demoCopy = true;
+        });
+
         var ORDER = ["melt", "drench", "keeper", "rest"];
+        function orderedIds() { return liveIds.length ? liveIds : ORDER; }
 
         var bagCount = document.getElementById("bagCount");
         var toast = document.getElementById("toast");
@@ -1183,7 +1191,7 @@
         var pdId = null;
         var pdQty = 1;
 
-        function money(n) { return "$" + n; }
+        function money(n) { return "¥" + n; }
         function escapeHTML(value) {
           return String(value == null ? "" : value).replace(/[&<>"']/g, function (c) {
             return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
@@ -1477,21 +1485,34 @@
             if (!res.ok || !res.data) return;
             var data = res.data;
             catalogReady = true;
+            liveIds = [];
             (data.products || []).forEach(function (item) {
-              if (PRODUCTS[item.id]) { PRODUCTS[item.id].price = item.price; PRODUCTS[item.id].available = item.available; if (cart[item.id] > item.available) { if (item.available > 0) cart[item.id] = item.available; else delete cart[item.id]; } }
+              liveIds.push(item.id);
+              var product = PRODUCTS[item.id];
+              if (!product) {
+                // A product created in the admin that the static page never knew about.
+                product = PRODUCTS[item.id] = {
+                  name: item.name, tag: 'From the shelf', price: item.price, size: item.size || '',
+                  note: '', img: item.image || '', alt: item.name, desc: item.description || '',
+                  how: '', ingredients: [], demoCopy: false
+                };
+              }
+              product.name = item.name || product.name;
+              product.price = item.price;
+              product.available = item.available;
+              if (item.size) product.size = item.size;
+              if (item.description) {
+                // The shipped copy is demo text; once the merchant writes their own,
+                // the "demo product" disclaimer must disappear.
+                product.demoCopy = product.demoDesc !== undefined && item.description === product.demoDesc;
+                product.desc = item.description;
+              }
+              if (item.image) product.img = item.image;
+              if (cart[item.id] > item.available) { if (item.available > 0) cart[item.id] = item.available; else delete cart[item.id]; }
             });
             if (data.shipping) { SHIP_RATES.standard = data.shipping.standard; SHIP_RATES.express = data.shipping.express; FREE_SHIP_OVER = data.shipping.freeOver; }
             if (Number.isFinite(data.taxRate)) TAX_RATE = data.taxRate;
-            document.querySelectorAll('[data-add]').forEach(function (button) {
-              var product = PRODUCTS[button.getAttribute('data-add')];
-              if (!product || !Number.isFinite(product.available)) return;
-              var card = button.closest('.step, .card');
-              var price = card && card.querySelector('.step-price, .price');
-              if (price) price.textContent = fmt(product.price);
-              button.disabled = product.available < 1;
-              button.textContent = product.available < 1 ? 'Sold out' : (product.available <= 3 ? 'Only ' + product.available + ' left' : 'Add to bag');
-              button.setAttribute('aria-label', product.available < 1 ? product.name + ' is sold out' : 'Add ' + product.name + ' to bag');
-            });
+            syncStorefront();
             syncBadge();
             renderCart();
             if (window.location.hash === '#checkout' && !lastOrder && cartCount()) renderCheckout();
@@ -1499,7 +1520,59 @@
           });
         }
 
-        function fmt(n) { return "$" + n.toFixed(2); }
+        /* ---------- Catalog rendering ----------
+           The designed markup stays in the page; the server decides what is on sale.
+           Existing cards are updated in place, products published later are appended,
+           and products that are archived or drafted are hidden. */
+        var liveIds = [];
+
+        function syncStorefront() {
+          var grid = document.querySelector('#shop .grid');
+          document.querySelectorAll('[data-add]').forEach(function (button) {
+            var id = button.getAttribute('data-add');
+            var product = PRODUCTS[id];
+            var card = button.closest('.step, .card');
+            if (!product || liveIds.indexOf(id) < 0) {
+              if (card) card.hidden = true;
+              button.disabled = true;
+              return;
+            }
+            if (card) {
+              card.hidden = false;
+              var price = card.querySelector('.step-price, .price');
+              if (price) price.textContent = fmt(product.price);
+              var nameEl = card.querySelector('.product-name, h3 a, h3');
+              if (nameEl) nameEl.textContent = product.name;
+              var noteEl = card.querySelector('.card-body .note');
+              if (noteEl) noteEl.textContent = product.size + (product.note ? ' · ' + product.note : '');
+              var img = card.querySelector('img');
+              if (img && product.img && img.getAttribute('src') !== product.img) { img.setAttribute('src', product.img); img.setAttribute('alt', product.alt || product.name); }
+              var link = card.querySelector('a[href^="#product/"]');
+              if (link) link.setAttribute('aria-label', 'View ' + product.name);
+            }
+            button.disabled = product.available < 1;
+            button.textContent = product.available < 1 ? 'Sold out' : (product.available <= 3 ? 'Only ' + product.available + ' left' : 'Add to bag');
+            button.setAttribute('aria-label', product.available < 1 ? product.name + ' is sold out' : 'Add ' + product.name + ' to bag');
+          });
+          if (!grid) return;
+          // Append a card for any active product that has no designed markup yet.
+          liveIds.forEach(function (id) {
+            if (grid.querySelector('[data-add="' + id + '"]')) return;
+            var p = PRODUCTS[id];
+            var article = document.createElement('article');
+            article.className = 'card';
+            article.innerHTML =
+              '<a href="#product/' + id + '" aria-label="View ' + escapeHTML(p.name) + '"><img src="' + escapeHTML(p.img) + '" alt="' + escapeHTML(p.alt || p.name) + '" loading="lazy" decoding="async" /></a>' +
+              '<div class="card-body"><p class="tag">' + escapeHTML(p.tag) + '</p>' +
+              '<h3><a href="#product/' + id + '">' + escapeHTML(p.name) + '</a></h3>' +
+              '<p class="note">' + escapeHTML(p.size) + '</p>' +
+              '<div class="card-foot"><span class="price">' + fmt(p.price) + '</span>' +
+              '<button class="add-btn" type="button" data-add="' + id + '">Add to bag</button></div></div>';
+            grid.appendChild(article);
+          });
+        }
+
+        function fmt(n) { return "¥" + n.toFixed(2); }
         function shipMethod() {
           var r = checkoutPage.querySelector('input[name="coShip"]:checked');
           return r ? r.value : "standard";
@@ -1864,12 +1937,12 @@
           var p = PRODUCTS[id];
           return (
             '<article class="card">' +
-            '<a href="#product/' + id + '" aria-label="View ' + p.name + '"><img src="' + p.img + '" alt="' + p.alt + '" /></a>' +
+            '<a href="#product/' + id + '" aria-label="View ' + escapeHTML(p.name) + '"><img src="' + escapeHTML(p.img) + '" alt="' + escapeHTML(p.alt || p.name) + '" /></a>' +
             '<div class="card-body">' +
-            '<p class="tag">' + p.tag + "</p>" +
-            '<h3><a href="#product/' + id + '">' + p.name + "</a></h3>" +
-            '<p class="note">' + p.size + " · " + p.note.toLowerCase() + "</p>" +
-            '<div class="card-foot"><span class="price">' + money(p.price) + "</span>" +
+            '<p class="tag">' + escapeHTML(p.tag) + "</p>" +
+            '<h3><a href="#product/' + id + '">' + escapeHTML(p.name) + "</a></h3>" +
+            '<p class="note">' + escapeHTML(p.size) + (p.note ? " · " + escapeHTML(p.note) + "" : "") + "</p>" +
+            '<div class="card-foot"><span class="price">' + fmt(p.price) + "</span>" +
             '<button class="add-btn" type="button" data-add="' + id + '">Add to bag</button>' +
             "</div></div></article>"
           );
@@ -1878,22 +1951,22 @@
           var p = PRODUCTS[id];
           pdId = id;
           pdQty = 1;
-          var pairs = ORDER.filter(function (x) { return x !== id; }).map(pairCard).join("");
-          var ings = p.ingredients.map(function (pair) {
-            return "<li><strong>" + pair[0] + "</strong> — " + pair[1] + "</li>";
+          var pairs = orderedIds().filter(function (x) { return x !== id && PRODUCTS[x]; }).map(pairCard).join("");
+          var ings = (p.ingredients || []).map(function (pair) {
+            return "<li><strong>" + escapeHTML(pair[0]) + "</strong> — " + escapeHTML(pair[1]) + "</li>";
           }).join("");
           productPage.innerHTML =
             '<div class="wrap product-page">' +
             '<a class="back-link" href="#shop"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12H4m6 6-6-6 6-6"/></svg>Back to shop</a>' +
             '<div class="pd-grid">' +
-            '<figure class="pd-photo"><img src="' + p.img + '" alt="' + p.alt + '" /></figure>' +
+            '<figure class="pd-photo"><img src="' + escapeHTML(p.img) + '" alt="' + escapeHTML(p.alt || p.name) + '" /></figure>' +
             '<div class="pd-info">' +
-            '<p class="label">' + p.tag + "</p>" +
-            '<h1 class="pd-name">' + p.name + "</h1>" +
-            '<p class="pd-price">' + money(p.price) + "</p>" +
-            '<p class="pd-size">' + p.size + " · " + p.note + "</p>" +
-            '<p class="pd-concept">Fictional product — sample formulas and directions, not verified products or skincare advice.</p>' +
-            '<p class="pd-desc">' + p.desc + "</p>" +
+            '<p class="label">' + escapeHTML(p.tag) + "</p>" +
+            '<h1 class="pd-name">' + escapeHTML(p.name) + "</h1>" +
+            '<p class="pd-price">' + fmt(p.price) + "</p>" +
+            '<p class="pd-size">' + escapeHTML(p.size) + (p.note ? " · " + escapeHTML(p.note) : "") + "</p>" +
+            (p.demoCopy ? '<p class="pd-concept">Demo product — replace this copy in the admin before real trading.</p>' : '') +
+            '<p class="pd-desc">' + escapeHTML(p.desc) + "</p>" +
             '<div class="pd-buy">' +
             '<span class="qty">' +
             '<button type="button" data-pd-dec aria-label="One less" disabled>−</button>' +
@@ -1902,14 +1975,14 @@
             "</span>" +
             '<button class="btn" type="button" data-pd-add>Add to bag</button>' +
             "</div>" +
-            '<div class="pd-block"><h3>How to use</h3><p>' + p.how + "</p></div>" +
-            '<div class="pd-block"><h3>Inside the bottle</h3><ul>' + ings + "</ul></div>" +
+            (p.how ? '<div class="pd-block"><h3>How to use</h3><p>' + escapeHTML(p.how) + "</p></div>" : "") +
+            (ings ? '<div class="pd-block"><h3>Inside the bottle</h3><ul>' + ings + "</ul></div>" : "") +
             "</div></div>" +
             '<div class="pairs"><h2>Complete the ritual</h2><div class="pairs-grid">' + pairs + "</div></div>" +
             "</div>";
         }
         function route() {
-          var m = window.location.hash.match(/^#product\/([a-z]+)$/);
+          var m = window.location.hash.match(/^#product\/([a-z0-9-]+)$/);
           if (window.location.hash === "#checkout") {
             if (lastOrder && !cartCount()) {
               renderConfirmation();
